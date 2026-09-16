@@ -353,10 +353,20 @@ PyObject* IOUringBackend::read_at(int64_t offset, int64_t size) {
     return future;
 }
 
-PyObject* IOUringBackend::write(Py_buffer* view) {
+PyObject* IOUringBackend::write(Py_buffer* view, int64_t position) {
     try { ensure_loop_initialized(); }
     catch (const std::runtime_error&) {
         return create_rejected_future(nullptr, g_ValueError, "No running event loop", 0);
+    }
+
+    if (position >= 0 && (m_appendMode || (fcntl(m_fd, F_GETFL) & O_APPEND))) {
+        PyErr_SetString(PyExc_ValueError, "write_at() does not support append mode");
+        return nullptr;
+    }
+    // Native completion counts and submission lengths are 32-bit.
+    if (static_cast<uint64_t>(view->len) > UINT32_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "write buffer exceeds 4 GiB - 1");
+        return nullptr;
     }
 
     size_t size = static_cast<size_t>(view->len);
@@ -373,8 +383,8 @@ PyObject* IOUringBackend::write(Py_buffer* view) {
         return future;
     }
     
-    uint64_t offset;
-    {
+    uint64_t offset = static_cast<uint64_t>(position);
+    if (position < 0) {
         std::lock_guard<std::mutex> lk(m_posMtx);
         if (m_appendMode) {
             offset = m_cachedFileSize;
@@ -387,6 +397,11 @@ PyObject* IOUringBackend::write(Py_buffer* view) {
         }
     }
     
+    if (position >= 0) {
+        std::lock_guard<std::mutex> lk(m_posMtx);
+        if (offset + size > m_cachedFileSize) m_cachedFileSize = offset + size;
+    }
+
     IORequest* req = make_req(size, future, ReqType::Write);
     std::memcpy(req->buf(), view->buf, size);
     m_pending.fetch_add(1, std::memory_order_relaxed);

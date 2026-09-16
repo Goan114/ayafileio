@@ -749,7 +749,7 @@ PyObject *IOCPContext::submit_read_at(uint64_t session_id, int64_t offset, int64
 // submit_write
 // ════════════════════════════════════════════════════════════════════════════
 
-PyObject *IOCPContext::submit_write(uint64_t session_id, Py_buffer *view) {
+PyObject *IOCPContext::submit_write(uint64_t session_id, Py_buffer *view, int64_t position) {
     auto s = get_session(session_id);
     if (!s) {
         PyObject *loop = PyObject_CallNoArgs(g_get_running_loop);
@@ -769,6 +769,16 @@ PyObject *IOCPContext::submit_write(uint64_t session_id, Py_buffer *view) {
 
     PyObject *future = check_session_closed(s);
     if (future) return future;
+
+    if (position >= 0 && s->appendMode) {
+        PyErr_SetString(PyExc_ValueError, "write_at() does not support append mode");
+        return nullptr;
+    }
+    // Native completion counts and submission lengths are 32-bit.
+    if (static_cast<uint64_t>(view->len) > UINT32_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "write buffer exceeds 4 GiB - 1");
+        return nullptr;
+    }
 
     size_t wsize = (size_t)view->len;
     future = PyObject_CallNoArgs(s->create_future);
@@ -790,8 +800,8 @@ PyObject *IOCPContext::submit_write(uint64_t session_id, Py_buffer *view) {
         return future;
     }
 
-    uint64_t offset;
-    {
+    uint64_t offset = static_cast<uint64_t>(position);
+    if (position < 0) {
         std::lock_guard<std::mutex> lk(s->posMtx);
         if (s->appendMode) {
             offset = s->cachedFileSize;
@@ -801,6 +811,11 @@ PyObject *IOCPContext::submit_write(uint64_t session_id, Py_buffer *view) {
         s->filePos = offset + wsize;
         if (s->filePos > s->cachedFileSize)
             s->cachedFileSize = s->filePos;  // optimistic: assume write succeeds
+    }
+
+    if (position >= 0) {
+        std::lock_guard<std::mutex> lk(s->posMtx);
+        if (offset + wsize > s->cachedFileSize) s->cachedFileSize = offset + wsize;
     }
 
     IORequest *req = make_req_iocp(wsize, future, ReqType::Write,

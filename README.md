@@ -170,6 +170,8 @@ class AsyncFile(Generic[T]):
     async def chunk(chunk_size: int, *, buf: bytearray | memoryview | None = None) -> AsyncGenerator[memoryview, None]: ...  # 流式分块 [仅二进制]
     async def read_at(offset: int, size: int = -1) -> bytes: ...  # 位置读（pread 语义），不动文件位置 [仅二进制]
     async def read_many(spans: Iterable[tuple[int, int]]) -> list[bytes]: ...  # 批量位置读，单事件循环周期提交 [仅二进制]
+    async def write_at(offset: int, data: bytes | bytearray | memoryview) -> int: ...
+    async def write_many(writes: Iterable[tuple[int, bytes | bytearray | memoryview]]) -> list[int]: ...
 
     # 写入
     async def write(self, data: str | bytes) -> int: ...
@@ -328,3 +330,29 @@ MIT License — see [LICENSE](LICENSE) for details.
 *— Aya Shameimaru, editor-in-chief of Bunbunmaru News*
 
 ---
+
+### Positioned and batched writes
+
+```python
+async with ayafileio.open("data.bin", "w+b") as f:
+    n = await f.write_at(1024, b"payload")
+    counts = await f.write_many([(0, b"header"), (4096, b"block")])
+    assert await f.tell() == 0
+```
+
+`write_at(offset, data)` returns the number of bytes written. `write_many(writes)`
+accepts an iterable of `(offset, data)` pairs and returns counts in input order.
+Both require a writable binary file, reject append mode, and preserve the logical
+file position. They accept `bytes`, `bytearray`, and contiguous `memoryview` buffers,
+which the backend copies on submission. Positioned writes rewind and discard any
+`readline()` read-ahead so subsequent reads see the updated content.
+An empty batch returns `[]`; an empty buffer returns `0`. Offsets must be nonnegative,
+offset plus length must fit a signed 64-bit integer, and each buffer is limited to
+4 GiB minus 1 byte. As with `write()`, callers must check for short writes.
+
+Batch operations gather native Futures directly, avoiding a Python Task per item;
+`read_many()` uses the same optimization. Submitted requests are drained before
+reporting submission or I/O errors, but batches are not atomic: some writes may
+have succeeded when an error is raised. Concurrent overlapping writes have
+unspecified ordering; await each `write_at(...)` separately when ordering matters.
+Cancelling the wait does not undo already submitted system I/O.

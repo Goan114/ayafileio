@@ -481,7 +481,7 @@ PyObject* MacOSGCDBackend::read_at(int64_t offset, int64_t size) {
     return future;
 }
 
-PyObject* MacOSGCDBackend::write(Py_buffer* view) {
+PyObject* MacOSGCDBackend::write(Py_buffer* view, int64_t position) {
     UR_DEBUG_LOG("MacOSGCDBackend::write start, this=%p, size=%zd", (void*)this, view->len);
     
     try {
@@ -491,6 +491,16 @@ PyObject* MacOSGCDBackend::write(Py_buffer* view) {
         return create_rejected_future(nullptr, g_ValueError, "No running event loop", 0);
     }
     
+    if (position >= 0 && (m_appendMode || (fcntl(m_fd, F_GETFL) & O_APPEND))) {
+        PyErr_SetString(PyExc_ValueError, "write_at() does not support append mode");
+        return nullptr;
+    }
+    // Native completion counts and submission lengths are 32-bit.
+    if (static_cast<uint64_t>(view->len) > UINT32_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "write buffer exceeds 4 GiB - 1");
+        return nullptr;
+    }
+
     size_t size = static_cast<size_t>(view->len);
     PyObject* future = PyObject_CallNoArgs(m_create_future);
     if (!future) return nullptr;
@@ -509,8 +519,8 @@ PyObject* MacOSGCDBackend::write(Py_buffer* view) {
         return future;
     }
     
-    uint64_t offset;
-    {
+    uint64_t offset = static_cast<uint64_t>(position);
+    if (position < 0) {
         std::lock_guard<std::mutex> lk(m_posMtx);
         
         if (m_appendMode) {
