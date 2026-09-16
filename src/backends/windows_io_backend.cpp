@@ -202,8 +202,8 @@ PyObject *WindowsIOBackend::read_at(int64_t offset, int64_t size) {
     return IOCPContext::instance().submit_read_at(m_sessionId, offset, size);
 }
 
-PyObject *WindowsIOBackend::write(Py_buffer *view) {
-    return IOCPContext::instance().submit_write(m_sessionId, view);
+PyObject *WindowsIOBackend::write(Py_buffer *view, int64_t position) {
+    return IOCPContext::instance().submit_write(m_sessionId, view, position);
 }
 
 PyObject *WindowsIOBackend::seek(int64_t offset, int whence) {

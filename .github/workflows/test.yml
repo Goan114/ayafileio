@@ -72,6 +72,13 @@ jobs:
       run: |
         export CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DENABLE_DEBUG=OFF -DENABLE_VERBOSE_LOGGING=OFF"
         pip install -e . -v
+    - name: Test positioned I/O and Python wrapper
+      timeout-minutes: 3
+      shell: bash
+      run: |
+        python -c "import ayafileio._ayafileio"
+        python -m unittest discover -s tests -p test_async_wrapper.py -v
+        python -m unittest discover -s tests -p test_write_at.py -v
     - name: Check backend info
       timeout-minutes: 1
       run: |
@@ -172,6 +179,13 @@ jobs:
       run: |
         $env:CMAKE_ARGS = "-DCMAKE_BUILD_TYPE=Release -DENABLE_DEBUG=OFF -DENABLE_VERBOSE_LOGGING=OFF"
         pip install -e . -v
+    - name: Test positioned I/O and Python wrapper
+      timeout-minutes: 3
+      shell: bash
+      run: |
+        python -c "import ayafileio._ayafileio"
+        python -m unittest discover -s tests -p test_async_wrapper.py -v
+        python -m unittest discover -s tests -p test_write_at.py -v
     - name: Check backend info
       timeout-minutes: 1
       run: |
@@ -267,6 +281,13 @@ jobs:
       run: |
         export CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DENABLE_DEBUG=OFF -DENABLE_VERBOSE_LOGGING=OFF"
         pip install -e . -v
+    - name: Test positioned I/O and Python wrapper
+      timeout-minutes: 3
+      shell: bash
+      run: |
+        python -c "import ayafileio._ayafileio"
+        python -m unittest discover -s tests -p test_async_wrapper.py -v
+        python -m unittest discover -s tests -p test_write_at.py -v
     - name: Check backend info
       timeout-minutes: 1
       run: |

@@ -81,6 +81,23 @@ def _translate_for_write(text: str, newline: str | None) -> str:
     return text
 
 
+async def _gather_io(requests):
+    """Submit native Futures directly; drain submitted I/O before reporting errors."""
+    pending = []
+    try:
+        for request in requests:
+            pending.append(request)
+    except BaseException:
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        raise
+    results = await asyncio.gather(*pending, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return results
+
+
 class AsyncFile(Generic[T]):
     """跨平台异步文件对象。
 
@@ -236,10 +253,11 @@ class AsyncFile(Generic[T]):
             raise ValueError("I/O operation on closed file.")
 
         buf = self._line_buffer
-        newline = self._newline
+        newline = self._newline if self._is_text else "\n"
+        scan_pos = self._line_pos
         while True:
             sep_start, sep_len = _find_line_end(
-                buf, self._line_pos, newline, eof=False
+                buf, scan_pos, newline, eof=False
             )
             if sep_start != -1:
                 # Include the separator in the returned line.
@@ -249,6 +267,8 @@ class AsyncFile(Generic[T]):
                     return _translate_for_read(text, newline)
                 return bytes(line)
 
+            # Only rescan the final byte: a CRLF may straddle chunks.
+            scan_pos = max(self._line_pos, len(buf) - 1)
             chunk: bytes = await self._impl.read(_DEFAULT_READLINE_BUF)
             if not chunk:
                 # EOF: flush whatever remains in the line buffer.
@@ -264,6 +284,7 @@ class AsyncFile(Generic[T]):
                 return "" if self._is_text else b""
             # 追加新数据前先丢弃已消费的前缀，避免缓冲无限增长
             if self._line_pos:
+                scan_pos -= self._line_pos
                 del buf[: self._line_pos]
                 self._line_pos = 0
             buf.extend(chunk)
@@ -330,7 +351,8 @@ class AsyncFile(Generic[T]):
         I/O 在首个挂起点之前全部提交给后端，共享同一个事件循环周期；C++ 层
         的 ResultBatcher 会把一批完成通知聚合成少量
         ``loop.call_soon_threadsafe`` 回调，比逐个 ``await read_at(...)``
-        少 N-1 次协程往返。
+        少 N-1 次协程往返。直接聚合底层 Future，避免为每个 span 创建 Task。
+        提交失败或 I/O 报错时，等待已提交的请求完成后再抛出异常。
 
         Raises:
             ValueError: 文本模式、文件已关闭、或任一 ``offset < 0``。
@@ -339,7 +361,7 @@ class AsyncFile(Generic[T]):
             raise ValueError("I/O operation on closed file.")
         if self._is_text:
             raise ValueError("read_many() only supports binary mode")
-        return list(await asyncio.gather(*(self.read_at(o, s) for o, s in spans)))
+        return await _gather_io(self._impl.read_at(o, s) for o, s in spans)
 
     async def readinto(self, buf: bytearray | memoryview) -> int:
         """零拷贝读取到预分配缓冲区，返回读取字节数。"""
@@ -432,6 +454,41 @@ class AsyncFile(Generic[T]):
             raw = data  # type: ignore[assignment]
         await self._rewind_readahead()
         return await self._impl.write(raw)
+
+    async def write_at(self, offset: int, data: bytes | bytearray | memoryview) -> int:
+        """Write bytes at an absolute offset without changing tell().
+
+        Binary, non-append files only. Returns the number of bytes written;
+        a short write is possible, as with write(). Overlapping concurrent
+        writes have unspecified ordering. Read-ahead is invalidated first.
+        """
+        self._check_positioned_write()
+        await self._rewind_readahead()
+        return await self._impl.write_at(offset, data)
+
+    def _check_positioned_write(self) -> None:
+        if self._closed:
+            raise ValueError("I/O operation on closed file.")
+        if self._is_text:
+            raise ValueError("positioned writes only support binary mode")
+        if "a" in self._mode:
+            raise ValueError("positioned writes do not support append mode")
+        if not self.writable():
+            raise OSError("File not open for writing")
+
+    async def write_many(
+        self, writes: Iterable[tuple[int, bytes | bytearray | memoryview]]
+    ) -> list[int]:
+        """Submit (offset, data) writes concurrently, returning counts in order.
+
+        Semantics match write_at(). This is not an atomic transaction: an
+        error can leave other writes committed. Submitted I/O is drained
+        before an error is raised. Avoid overlapping ranges when ordering
+        matters. Mutable buffers are copied by the backend on submission.
+        """
+        self._check_positioned_write()
+        await self._rewind_readahead()
+        return await _gather_io(self._impl.write_at(o, data) for o, data in writes)
 
     # ── seek / flush / close / tell 等 ──────────────────────────────────────────────────
 

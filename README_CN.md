@@ -168,6 +168,8 @@ class AsyncFile(Generic[T]):
     async def chunk(chunk_size: int, *, buf: bytearray | memoryview | None = None) -> AsyncGenerator[memoryview, None]: ...  # 流式分块 [仅二进制]
     async def read_at(offset: int, size: int = -1) -> bytes: ...  # 位置读（pread 语义），不动文件位置 [仅二进制]
     async def read_many(spans: Iterable[tuple[int, int]]) -> list[bytes]: ...  # 批量位置读，单事件循环周期提交 [仅二进制]
+    async def write_at(offset: int, data: bytes | bytearray | memoryview) -> int: ...
+    async def write_many(writes: Iterable[tuple[int, bytes | bytearray | memoryview]]) -> list[int]: ...
 
     # 写入
     async def write(self, data: str | bytes) -> int: ...
@@ -326,3 +328,24 @@ MIT 许可证 —— **最速最自由**，详见 [LICENSE](LICENSE)。
 *—— 射命丸文，『文文。新闻』主编*
 
 ---
+
+### 位置写入与批量写入
+
+```python
+async with ayafileio.open("data.bin", "w+b") as f:
+    n = await f.write_at(1024, b"payload")
+    counts = await f.write_many([(0, b"header"), (4096, b"block")])
+    assert await f.tell() == 0
+```
+
+`write_at(offset, data)` 返回实际写入字节数；`write_many(writes)` 接受可迭代的
+`(offset, data)`，并按输入顺序返回字节数列表。二者仅支持可写的二进制文件，拒绝追加模式，
+不改变逻辑文件位置。支持 `bytes`、`bytearray` 和连续 `memoryview`；底层提交时复制数据。
+位置写入会丢弃并回退 `readline()` 的预读缓存，以保证后续读取能看到新内容。
+空批次返回 `[]`，空数据返回 `0`；偏移必须非负，偏移加长度不能超过有符号 64 位范围，
+每项数据长度最多为 4 GiB − 1 字节。与 `write()` 一样，调用者应检查短写返回值。
+
+批量请求直接聚合原生 Future，省去每项创建 Python Task 的开销；`read_many()` 也采用此优化。
+这些批量操作会在报告提交或 I/O 异常前等待已提交请求完成，但不是原子事务，失败时可能已部分写入。
+重叠区间的并发写入顺序未定义；需要顺序保证时请逐项 `await write_at(...)`。
+取消等待不会撤销已经提交的系统 I/O。

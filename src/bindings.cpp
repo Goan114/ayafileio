@@ -56,6 +56,27 @@ struct PyAsyncFile {
         if (!r) throw py::python_error();
         return py::steal<py::object>(py::handle(r));
     }
+    py::object write_at(int64_t offset, py::object data) {
+        if (offset < 0) throw py::value_error("offset must be non-negative");
+        Py_buffer view;
+        if (PyObject_GetBuffer(data.ptr(), &view, PyBUF_SIMPLE) < 0)
+            throw py::python_error();
+        if (offset > INT64_MAX - view.len) {
+            PyBuffer_Release(&view);
+            PyErr_SetString(PyExc_OverflowError, "offset + buffer size exceeds INT64_MAX");
+            throw py::python_error();
+        }
+        PyObject *r;
+        try {
+            r = fh->write(&view, offset);
+        } catch (...) {
+            PyBuffer_Release(&view);
+            throw;
+        }
+        PyBuffer_Release(&view);
+        if (!r) throw py::python_error();
+        return py::steal<py::object>(py::handle(r));
+    }
     py::object seek(int64_t offset, int whence = 0) {
         PyObject *r = fh->seek(offset, whence);
         if (!r) throw py::python_error();
@@ -333,6 +354,7 @@ NB_MODULE(_ayafileio, m) {
         .def("read_at", &PyAsyncFile::read_at,
              py::arg("offset"), py::arg("size") = -1)
         .def("write", &PyAsyncFile::write)
+        .def("write_at", &PyAsyncFile::write_at, py::arg("offset"), py::arg("data"))
         .def("seek",  &PyAsyncFile::seek,  py::arg("offset"), py::arg("whence") = 0)
         .def("flush", &PyAsyncFile::flush)
         .def("close", &PyAsyncFile::close)

@@ -15,7 +15,7 @@ public:
 
     PyObject* read(int64_t size = -1) { return m_backend->read(size); }
     PyObject* read_at(int64_t offset, int64_t size) { return m_backend->read_at(offset, size); }
-    PyObject* write(Py_buffer* view) { return m_backend->write(view); }
+    PyObject* write(Py_buffer* view, int64_t position = -1) { return m_backend->write(view, position); }
     PyObject* seek(int64_t offset, int whence = 0) { return m_backend->seek(offset, whence); }
     PyObject* flush() { return m_backend->flush(); }
     PyObject* close() { return m_backend->close(); }
