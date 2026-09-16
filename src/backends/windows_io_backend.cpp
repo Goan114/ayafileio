@@ -215,7 +215,13 @@ PyObject *WindowsIOBackend::flush() {
 }
 
 PyObject *WindowsIOBackend::close() {
-    return IOCPContext::instance().submit_close(m_sessionId);
+    PyObject *future = IOCPContext::instance().submit_close(m_sessionId);
+    // submit_close removes the session synchronously. Do not try to close
+    // it again when Python destroys this object after its loop has stopped.
+    if (future && !IOCPContext::instance().get_session(m_sessionId)) {
+        m_sessionId = 0;
+    }
+    return future;
 }
 
 PyObject *WindowsIOBackend::tell() {
@@ -240,6 +246,9 @@ void WindowsIOBackend::close_impl() {
     if (m_sessionId != 0) {
         uint64_t sid = m_sessionId;
         m_sessionId = 0;
+        // Emergency shutdown may also have removed this session. The
+        // missing-session submit_close path requires a running loop.
+        if (!IOCPContext::instance().get_session(sid)) return;
         PyObject *future = IOCPContext::instance().submit_close(sid);
         Py_XDECREF(future);
     }

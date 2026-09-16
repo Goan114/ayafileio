@@ -1,6 +1,9 @@
 """Native positioned-write regression tests: python -m unittest discover -s tests -p test_write_at.py."""
 import asyncio
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -10,6 +13,60 @@ except ModuleNotFoundError as exc:
     if exc.name != "ayafileio._ayafileio":
         raise
     ayafileio = None
+
+
+@unittest.skipIf(ayafileio is None, "Build the native extension first")
+class FileLifecycleTests(unittest.TestCase):
+    def test_destroy_closed_files_after_loop_shutdown(self):
+        # A leaked C API exception can surface on an unrelated Python opcode
+        # or abort unittest itself, so exercise destruction in a subprocess.
+        script = textwrap.dedent("""
+            import asyncio
+            import gc
+            import sys
+            import tempfile
+            from pathlib import Path
+            import ayafileio
+
+            unraisable = []
+            sys.unraisablehook = unraisable.append
+
+            async def open_and_close(path):
+                f = ayafileio.open(path, "w+b")
+                await f.write_at(0, b"data")
+                await f.close()
+                await f.close()
+                return f
+
+            async def open_and_force_close(path):
+                f = ayafileio.open(path, "w+b")
+                f._close_impl()
+                return f
+
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "lifecycle.bin"
+                for operation, repeat_close in (
+                    (open_and_close, False),
+                    (open_and_close, True),
+                    (open_and_force_close, True),
+                ):
+                    f = asyncio.run(operation(path))
+                    # No running event loop from here onwards.
+                    if repeat_close:
+                        f._close_impl()
+                    del f
+                    gc.collect()
+                    assert path.read_bytes() in (b"data", b"")
+                assert not unraisable, unraisable
+            print("cleanup completed")
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertIn("cleanup completed", result.stdout)
 
 
 @unittest.skipIf(ayafileio is None, "Build the native extension first")
